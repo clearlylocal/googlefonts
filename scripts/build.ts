@@ -21,7 +21,7 @@ const styles = await Promise.all(
 
 await Deno.writeTextFile('./xyz', JSON.stringify(styles))
 
-console.log(
+console.info(
 	[
 		...styles.map((x) =>
 			[`/* === ${x.family} === */`, x.styles].join('\n'),
