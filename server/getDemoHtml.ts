@@ -1,19 +1,57 @@
+import { CSS } from '../utils/CSS.ts'
+
+const withSearchParams = (
+	href: string,
+	params: Record<string, string | undefined>,
+) =>
+	[
+		href,
+		new URLSearchParams(
+			Object.entries(params).filter(
+				([_, v]) => typeof v === 'string',
+			) as [string, string][],
+		).toString(),
+	]
+		.filter(Boolean)
+		.join('?')
+
 export const getDemoHtml = ({
 	ownBaseUrl,
 	searchParams,
 }: {
 	ownBaseUrl: string
 	searchParams: URLSearchParams
-}) => `<!DOCTYPE html>
+}) => {
+	const { family, display, cssvar, merge, minify } = {
+		...{ family: 'Ubuntu' },
+		...Object.fromEntries([...searchParams]),
+	} as Record<string, string | undefined>
+
+	return `<!DOCTYPE html>
 <html lang="en">
 	<head>
 		<title>Title</title>
-		<link rel="stylesheet" href="${ownBaseUrl}/styles/noto.css${((x) =>
-	x ? '?' + x : '')(searchParams.toString())}">
+		<link rel="stylesheet" href="${withSearchParams(`${ownBaseUrl}/css/css2`, {
+			family,
+			display,
+			minify,
+		})}">
+		<link rel="stylesheet" href="${withSearchParams(
+			`${ownBaseUrl}/noto/combined.css`,
+			{ display, merge, cssvar, minify },
+		)}">
 		<style>
 		.demo {
+			--font: '${family}', ${
+		searchParams.has('merge')
+			? 'Noto Sans'
+			: `var(--${CSS.escape(
+					searchParams.get('cssvar') || 'noto-combined',
+			  )})`
+	};
+
 			white-space: pre-wrap;
-			font-family: ${searchParams.has('merge') ? 'Noto Sans' : 'var(--noto)'};
+			font-family: var(--font);
 			margin-block-end: .5em;
 		}
 		.below {
@@ -32,3 +70,4 @@ export const getDemoHtml = ({
 		<div class="below"></div>
 	</body>
 </html>`
+}

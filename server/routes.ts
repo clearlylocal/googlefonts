@@ -1,5 +1,6 @@
 import { Application } from 'https://deno.land/x/oak@v11.1.0/application.ts'
 import { Router } from 'https://deno.land/x/oak@v11.1.0/router.ts'
+import { CSS } from '../utils/CSS.ts'
 import { time } from '../utils/time.ts'
 import { getDemoHtml } from './getDemoHtml.ts'
 
@@ -8,15 +9,13 @@ await new Promise<void>((res) => setTimeout(res, 0))
 
 const ownBaseUrl = Deno.env.get('BASE_URL')!
 
+const googleCssBaseUrl = 'https://fonts.googleapis.com'
 const googleFontsBaseUrl = 'https://fonts.gstatic.com'
 
 type FontFace = {
 	family: string
 	styles: string
 }
-
-// special value for `nonce` query param
-const REFRESH = 'refresh()'
 
 const cjks = ['SC', 'TC', 'HK', 'JP', 'KR'].map((x) => `Noto Sans ${x}`)
 const specifieds = Object.fromEntries(
@@ -43,13 +42,52 @@ const priority = ({ family }: FontFace) => {
 	return 0
 }
 
-type FontResponseData = {
+type ResponseData = {
 	status: number
 	headers: Headers
 	body: Blob
 }
 
-const fontResponseCache = new Map<string, FontResponseData>()
+type ResponseCache = Map<string, ResponseData>
+
+const cssResponseCache: ResponseCache = new Map()
+const fontResponseCache: ResponseCache = new Map()
+
+// very naive algorithm, but for the Google-generated styles, gives identical
+// results to `clean-css` lib in a fraction of the time
+const minify = (css: string) =>
+	(css = css
+		.replaceAll(/\/\*[^*]+\*\//g, '')
+		.replaceAll(/\s+/g, ' ')
+		.replaceAll('; } ', '}')
+		.replaceAll('; ', ';')
+		.replaceAll(': ', ':')
+		.replaceAll(', ', ',')
+		.replaceAll(' { ', '{')
+		.trim())
+
+const getFromUrlOrCache = async (url: URL, cache: ResponseCache) => {
+	const href = url.toString()
+
+	let data: ResponseData
+	const cached = cache.get(href)
+
+	if (cached) {
+		data = cached
+	} else {
+		const res = await fetch(href)
+
+		const status = res.status
+		const headers = res.headers
+		const body = await res.blob()
+
+		data = { status, headers, body }
+
+		cache.set(href, data)
+	}
+
+	return data
+}
 
 export const apiServer = async () => {
 	const router = new Router()
@@ -70,7 +108,42 @@ export const apiServer = async () => {
 		},
 	)
 
-	router.get('/styles/noto.css', async (ctx) => {
+	router.get('/css/:path*', async (ctx) => {
+		const url = new URL(
+			ctx.params.path + ctx.request.url.search,
+			googleCssBaseUrl,
+		)
+
+		const data = await getFromUrlOrCache(url, cssResponseCache)
+
+		let css = await data.body.text()
+
+		css = css.replaceAll(googleFontsBaseUrl, ownBaseUrl + '/fonts')
+
+		// must be done last
+		if (ctx.request.url.searchParams.has('minify')) {
+			css = minify(css)
+		}
+
+		ctx.response.headers = data.headers
+		ctx.response.status = data.status
+		ctx.response.body = css
+	})
+
+	router.get('/fonts/:path*', async (ctx) => {
+		const url = new URL(
+			ctx.params.path + ctx.request.url.search,
+			googleFontsBaseUrl,
+		)
+
+		const data = await getFromUrlOrCache(url, fontResponseCache)
+
+		ctx.response.status = data.status
+		ctx.response.headers = data.headers
+		ctx.response.body = data.body
+	})
+
+	router.get('/noto/combined.css', async (ctx) => {
 		const rawFonts = JSON.parse(
 			await Deno.readTextFile('./data/fonts.json'),
 		) as FontFace[]
@@ -109,8 +182,11 @@ export const apiServer = async () => {
 		// 		},
 		// 	)
 
+		const cssVar =
+			ctx.request.url.searchParams.get('cssvar') || 'noto-combined'
+
 		if (ctx.request.url.searchParams.has('merge')) {
-			css = css.replace(
+			css = css.replaceAll(
 				/font-family:\s*'[^']+';/g,
 				"font-family: 'Noto Sans';",
 			)
@@ -120,7 +196,7 @@ export const apiServer = async () => {
 				[
 					'/* === All Noto Fonts === */',
 					':root {',
-					`  --noto: ${fonts
+					`  --${CSS.escape(cssVar)}: ${fonts
 						.map((x) => `'${x.family}'`)
 						.join(', ')};`,
 					'}',
@@ -140,78 +216,23 @@ export const apiServer = async () => {
 			)
 		}
 
-		const nonce = ctx.request.url.searchParams.get('nonce')
-
-		if (nonce) {
-			const search = new URLSearchParams({
-				nonce:
-					nonce === REFRESH ? String(Math.random()).slice(2) : nonce,
-			}).toString()
-
-			css = css.replaceAll('.woff2)', `.woff2?${search})`)
-		}
-
 		// must be done last
 		if (ctx.request.url.searchParams.has('minify')) {
-			// very naive algorithm, but for the Google-generated styles, gives
-			// identical results to clean-css lib in a fraction of the time
-
-			css = css
-				.replace(/\/\*[^*]+\*\//g, '')
-				.replace(/\s+/g, ' ')
-				.replaceAll('; } ', '}')
-				.replaceAll('; ', ';')
-				.replaceAll(': ', ':')
-				.replaceAll(', ', ',')
-				.replaceAll(' { ', '{')
-				.trim()
+			css = minify(css)
 		}
 
 		// headers
-		const year = time(1, 'year')
+		const month = time(1, 'month')
 
-		for (const [k, v] of nonce === REFRESH
-			? []
-			: [
-					['cache-control', `public, max-age=${year.in('seconds')}`],
-					[
-						'expires',
-						new Date(Date.now() + year.in('ms')).toUTCString(),
-					],
-			  ]) {
+		for (const [k, v] of [
+			['cache-control', `public, max-age=${month.in('seconds')}`],
+			['expires', new Date(Date.now() + month.in('ms')).toUTCString()],
+		]) {
 			ctx.response.headers.append(k, v)
 		}
 
 		ctx.response.type = 'text/css'
 		ctx.response.body = css
-	})
-
-	router.get('/fonts/:path*', async (ctx) => {
-		const url = new URL(
-			ctx.params.path + ctx.request.url.search,
-			googleFontsBaseUrl,
-		).toString()
-
-		let data: FontResponseData
-		const cached = fontResponseCache.get(url)
-
-		if (cached) {
-			data = cached
-		} else {
-			const res = await fetch(url)
-
-			const status = res.status
-			const headers = res.headers
-			const body = await res.blob()
-
-			data = { status, headers, body }
-
-			fontResponseCache.set(url, data)
-		}
-
-		ctx.response.status = data.status
-		ctx.response.headers = data.headers
-		ctx.response.body = data.body
 	})
 
 	const app = new Application()

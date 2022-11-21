@@ -27,11 +27,11 @@ console.info(
 			[`/* === ${x.family} === */`, x.styles].join('\n'),
 		),
 		`/* === All Noto Fonts === */
-	:root {
-	--noto: ${styles
+:root {
+	--noto-combined: ${styles
 		.map((x) => x.family)
 		.map((x) => JSON.stringify(x))
 		.join(', ')};
-	}`,
+}`,
 	].join('\n\n'),
 )
